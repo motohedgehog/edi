@@ -1,0 +1,30 @@
+[changelog]
+header = ""
+body = """
+{% for group, commits in commits | group_by(attribute=\"group\") %}
+### {{ group }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message }}{% if commit.breaking_description %} — {{ commit.breaking_description }}{% endif %} ([{{ commit.id | truncate(length=7, end=\"\") }}](https://github.com/motohedgehog/edi/commit/{{ commit.id }}))
+{% endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+filter_commits = true
+split_commits = false
+protect_breaking_commits = true
+commit_parsers = [
+  { field = "breaking", pattern = "true", group = "Breaking changes" },
+  { message = '^\w+\(deps(-dev)?\)!?:', group = "Dependencies" },
+  { message = '^feat(\(|!?:)', group = "Features" },
+  { message = '^fix(\(|!?:)', group = "Fixes" },
+  { message = '^perf(\(|!?:)', group = "Performance" },
+  { message = ".*", skip = true },
+]
+# The publisher supplies the exact ancestry-checked range; incidental tags must not split it.
+tag_pattern = "^$"
+sort_commits = "oldest"

@@ -1,0 +1,22 @@
+# AI agents
+.codegraph
+
+# Local configuration and data
+.env
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.db.lock
+
+# Go outputs
+/bin/
+/dist/
+/edi
+/edi.exe
+*.test
+coverage.out
+
+# macOS
+.DS_Store
+

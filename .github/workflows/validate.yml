@@ -1,0 +1,189 @@
+name: Validate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_call:
+    inputs:
+      source:
+        description: Exact source commit to check
+        type: string
+        default: ""
+      version:
+        description: Version embedded in the checked image
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  SOURCE: ${{ inputs.source || github.sha }}
+  VERSION: ${{ inputs.version || format('sha-{0}', github.sha) }}
+
+jobs:
+  quality:
+    name: Check code quality
+    runs-on: ubuntu-26.04
+    concurrency:
+      group: ci-quality-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Check out source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source || github.sha }}
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check out workflow tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tooling
+      - name: Install git-cliff
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: git-cliff@2.14.2
+          fallback: none
+      - name: Validate commit messages
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$(git rev-parse HEAD)"
+          range="$source"
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            source="$PR_HEAD"
+            range="$PR_BASE..$PR_HEAD"
+          fi
+          git-cliff --config tooling/cliff-check.toml "$range" > /dev/null
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          install-only: true
+      - name: Validate lint configuration and lint code
+        run: make check
+      - name: Scan Go dependencies for vulnerabilities
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-input: ""
+          go-version-file: go.mod
+          cache: false
+          repo-checkout: false
+          go-package: ./...
+
+  test-amd64:
+    name: Run tests (amd64)
+    runs-on: ubuntu-26.04
+    concurrency:
+      group: ci-test-amd64-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps: &test-steps
+      - name: Check out source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run tests with race detection
+        run: make test-race
+
+  test-arm64:
+    name: Run tests (arm64)
+    runs-on: ubuntu-26.04-arm
+    concurrency:
+      group: ci-test-arm64-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps: *test-steps
+
+  image-amd64:
+    name: Verify container image (amd64)
+    needs: [test-amd64]
+    runs-on: ubuntu-26.04
+    concurrency:
+      group: ci-image-amd64-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      ARCH: amd64
+    steps: &image-steps
+      - name: Check out source commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.SOURCE }}
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build container image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ env.ARCH }}
+          tags: edi:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SOURCE }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+          provenance: mode=min
+          outputs: type=oci,dest=${{ runner.temp }}/edi-${{ env.ARCH }}-oci,tar=false
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            COMMIT=${{ env.SOURCE }}
+          cache-from: type=gha,scope=edi-${{ env.ARCH }}
+          cache-to: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && format('type=gha,scope=edi-{0},mode=max', env.ARCH) || '' }}
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.76.2
+          input: ${{ runner.temp }}/edi-${{ env.ARCH }}-oci
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Package verified image and checksums
+        if: inputs.version != ''
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+          printf '%s\n' "$IMAGE_DIGEST" > "$RUNNER_TEMP/edi-$ARCH.oci.tar.digest"
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "$RUNNER_TEMP/edi-$ARCH-oci" -cf "$RUNNER_TEMP/edi-$ARCH.oci.tar" .
+          cd "$RUNNER_TEMP"
+          sha256sum "edi-$ARCH.oci.tar" > "edi-$ARCH.oci.tar.sha256"
+      - name: Upload verified image and checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.version != ''
+        with:
+          name: edi-${{ env.ARCH }}
+          path: |
+            ${{ runner.temp }}/edi-${{ env.ARCH }}.oci.tar
+            ${{ runner.temp }}/edi-${{ env.ARCH }}.oci.tar.sha256
+            ${{ runner.temp }}/edi-${{ env.ARCH }}.oci.tar.digest
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  image-arm64:
+    name: Verify container image (arm64)
+    needs: [test-arm64]
+    runs-on: ubuntu-26.04-arm
+    concurrency:
+      group: ci-image-arm64-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      ARCH: arm64
+    steps: *image-steps

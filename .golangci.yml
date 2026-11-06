@@ -1,0 +1,44 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - govet
+    - ineffassign
+    - nilerr
+    - sqlclosecheck
+    - staticcheck
+    - unused
+    - errorlint
+    - modernize
+    - nolintlint
+    - revive
+    - unconvert
+    - usetesting
+
+  settings:
+    revive:
+      enable-default-rules: true
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+    nolintlint:
+      require-specific: true
+      require-explanation: true
+      allow-unused: false
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0

@@ -1,0 +1,10 @@
+{
+	"recommendations": [
+		"1password.op-vscode",
+		"docker.docker",
+		"github.vscode-github-actions",
+		"golang.go",
+		"ms-azuretools.vscode-containers",
+		"vivaxy.vscode-conventional-commits"
+	]
+}

@@ -1,0 +1,271 @@
+name: Build & Publish
+run-name: ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && format('Release · {0}', inputs.tag || github.ref_name) || '' }}
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing strict vX.Y.Z tag to publish with current workflow tooling
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: Resolve source commit and image version
+    runs-on: ubuntu-26.04
+    outputs:
+      source: ${{ steps.source.outputs.source }}
+      version: ${{ steps.source.outputs.version }}
+      release: ${{ steps.source.outputs.release }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Determine commit and image version
+        id: source
+        env:
+          VERSION: ${{ inputs.tag || github.ref_name }}
+          EVENT_SOURCE: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            [[ "$EVENT_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            git cat-file -e "$EVENT_SOURCE^{commit}"
+            printf 'source=%s\nversion=sha-%s\nrelease=false\n' "$EVENT_SOURCE" "$EVENT_SOURCE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          git fetch origin main --tags --force
+          source="$(git rev-parse "refs/tags/$VERSION^{commit}")"
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            test "$source" = "$(git rev-parse "$EVENT_SOURCE^{commit}")"
+          fi
+          git merge-base --is-ancestor "$source" origin/main
+          printf 'source=%s\nversion=%s\nrelease=true\n' "$source" "$VERSION" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: Test and build
+    needs: [source]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/validate.yml
+    with:
+      source: ${{ needs.source.outputs.source }}
+      version: ${{ needs.source.outputs.version }}
+
+  publish:
+    name: Publish container image
+    needs: [source, ci]
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: publish-container
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-26.04
+    env:
+      IMAGE: ghcr.io/motohedgehog/edi
+      SOURCE: ${{ needs.source.outputs.source }}
+      VERSION: ${{ needs.source.outputs.version }}
+      IS_RELEASE: ${{ needs.source.outputs.release }}
+    steps:
+      - name: Check out publication tooling and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+      - name: Check whether publication should proceed
+        id: current
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          main="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test -n "$main"
+          if [[ "$IS_RELEASE" == true || "$main" == "$SOURCE" ]]; then
+            echo 'publish=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Stale main image: publication skipped.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Install Skopeo
+        if: steps.current.outputs.publish == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          echo "REGISTRY_AUTH_FILE=$HOME/.docker/config.json" >> "$GITHUB_ENV"
+      - name: Install git-cliff
+        if: steps.current.outputs.publish == 'true' && needs.source.outputs.release == 'true'
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: git-cliff@2.14.2
+          fallback: none
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: steps.current.outputs.publish == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate image version
+        if: steps.current.outputs.publish == 'true' && needs.source.outputs.release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! skopeo list-tags "docker://$IMAGE" > "$RUNNER_TEMP/tags.json" 2> "$RUNNER_TEMP/registry-error"; then
+            # Only an explicit absent repository permits the first publication.
+            grep -Eiq 'name unknown|NAME_UNKNOWN' "$RUNNER_TEMP/registry-error" || { cat "$RUNNER_TEMP/registry-error" >&2; exit 1; }
+            printf '{"Tags":[]}\n' > "$RUNNER_TEMP/tags.json"
+          fi
+          if ! jq -e --arg version "$VERSION" '.Tags | arrays | index($version) == null' "$RUNNER_TEMP/tags.json" > /dev/null; then
+            echo 'Container version already exists or registry tag data is invalid.' >&2
+            exit 1
+          fi
+      - name: Generate release notes
+        if: steps.current.outputs.publish == 'true' && needs.source.outputs.release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          previous="$(git tag --merged "$SOURCE" --sort=version:refname |
+            awk -v current="$VERSION" '/^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$/ && $0 != current {previous=$0} END {print previous}')"
+          range="$SOURCE"
+          if [[ -n "$previous" ]]; then
+            range="$previous..$SOURCE"
+          fi
+          git-cliff --config cliff.toml "$range" > "$RUNNER_TEMP/release-notes.md"
+          if [[ -n "$previous" ]]; then
+            printf '\n[Full changes](https://github.com/%s/compare/%s...%s)\n' "$GITHUB_REPOSITORY" "$previous" "$VERSION" >> "$RUNNER_TEMP/release-notes.md"
+          else
+            printf '\n[Full changes](https://github.com/%s/commits/%s)\n' "$GITHUB_REPOSITORY" "$SOURCE" >> "$RUNNER_TEMP/release-notes.md"
+          fi
+      - name: Download verified images
+        if: steps.current.outputs.publish == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: edi-*
+          path: artifacts
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.current.outputs.publish == 'true'
+      - name: Push images and verify digests
+        if: steps.current.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            directory="$GITHUB_WORKSPACE/artifacts/edi-$arch"
+            (cd "$directory" && sha256sum --check "edi-$arch.oci.tar.sha256")
+            digest="$(cat "$directory/edi-$arch.oci.tar.digest")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            skopeo copy --all --preserve-digests --digestfile "$RUNNER_TEMP/$arch.digest" \
+              "oci-archive:$directory/edi-$arch.oci.tar:latest" "docker://$IMAGE@$digest"
+            test "$(cat "$RUNNER_TEMP/$arch.digest")" = "$digest"
+          done
+      - name: Assemble and verify multi-platform image
+        if: steps.current.outputs.publish == 'true'
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          index="$RUNNER_TEMP/combined"
+          mkdir -p "$index"
+          docker buildx imagetools create --dry-run \
+            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation 'index:org.opencontainers.image.description=EDI is a personal Telegram bot.' \
+            --annotation 'index:org.opencontainers.image.licenses=GPL-3.0-only' \
+            "$IMAGE@$(cat "$RUNNER_TEMP/amd64.digest")" "$IMAGE@$(cat "$RUNNER_TEMP/arm64.digest")" > "$index/manifest.json"
+          # shellcheck disable=SC2016
+          jq -e --arg source "https://github.com/$GITHUB_REPOSITORY" '
+            [.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] as $amd64
+            | [.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] as $arm64
+            | [.manifests[] | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest") | .annotations["vnd.docker.reference.digest"]] as $attestations
+            | ($amd64 | length == 1) and ($arm64 | length == 1)
+              and ($attestations | length == 2)
+              and ($attestations | index($amd64[0].digest) != null)
+              and ($attestations | index($arm64[0].digest) != null)
+              and (.annotations["org.opencontainers.image.source"] == $source)
+              and (.annotations["org.opencontainers.image.description"] == "EDI is a personal Telegram bot.")
+              and (.annotations["org.opencontainers.image.licenses"] == "GPL-3.0-only")
+          ' "$index/manifest.json" > /dev/null
+          digest="$(skopeo manifest-digest "$index/manifest.json")"
+          # Both platforms and their attestations are already in the registry.
+          skopeo copy --multi-arch index-only --preserve-digests --digestfile "$RUNNER_TEMP/combined.digest" \
+            "dir:$index" "docker://$IMAGE@$digest"
+          test "$(cat "$RUNNER_TEMP/combined.digest")" = "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          # shellcheck disable=SC2016
+          printf 'Source: `%s`\n\nImage: `%s@%s`\n' "$SOURCE" "$IMAGE" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$IS_RELEASE" == true ]]; then
+            # shellcheck disable=SC2016
+            printf '\nSource: `%s`\n\nImage: `%s@%s`\n' "$SOURCE" "$IMAGE" "$digest" >> "$RUNNER_TEMP/release-notes.md"
+            cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Save release notes and image digest
+        if: steps.current.outputs.publish == 'true' && needs.source.outputs.release == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-record-${{ needs.source.outputs.version }}
+          path: ${{ runner.temp }}/release-notes.md
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish release image tags
+        if: steps.current.outputs.publish == 'true' && needs.source.outputs.release == 'true'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          skopeo copy --all --preserve-digests --digestfile "$RUNNER_TEMP/exact.digest" \
+            "docker://$IMAGE@$DIGEST" "docker://$IMAGE:$VERSION"
+          test "$(cat "$RUNNER_TEMP/exact.digest")" = "$DIGEST"
+          for alias in "${VERSION%.*}" "${VERSION%%.*}" stable; do
+            skopeo copy --all --preserve-digests --digestfile "$RUNNER_TEMP/alias.digest" \
+              "docker://$IMAGE@$DIGEST" "docker://$IMAGE:$alias"
+            test "$(cat "$RUNNER_TEMP/alias.digest")" = "$DIGEST"
+          done
+      - name: Publish development image tags
+        if: steps.current.outputs.publish == 'true' && needs.source.outputs.release != 'true'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          main="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test -n "$main"
+          if [[ "$main" != "$SOURCE" ]]; then exit 0; fi
+          skopeo copy --all --preserve-digests --digestfile "$RUNNER_TEMP/commit.digest" \
+            "docker://$IMAGE@$DIGEST" "docker://$IMAGE:sha-$SOURCE"
+          test "$(cat "$RUNNER_TEMP/commit.digest")" = "$DIGEST"
+      - name: Publish latest image tag
+        if: steps.current.outputs.publish == 'true'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: bash .github/scripts/publish-latest.sh
+
+  draft:
+    name: Draft GitHub release
+    needs: [source, publish]
+    if: needs.source.outputs.release == 'true'
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.source.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Retrieve generated release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-record-${{ needs.source.outputs.version }}
+          path: ${{ runner.temp }}/release-record
+      - name: Create draft GitHub release
+        run: gh release create "$VERSION" --verify-tag --title "$VERSION" --notes-file "$RUNNER_TEMP/release-record/release-notes.md" --draft

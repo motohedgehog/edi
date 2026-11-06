@@ -1,0 +1,11 @@
+[changelog]
+body = ""
+
+[git]
+conventional_commits = true
+require_conventional = true
+filter_unconventional = false
+filter_commits = false
+split_commits = false
+commit_parsers = []
+tag_pattern = "^$"

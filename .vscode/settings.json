@@ -1,0 +1,5 @@
+{
+	"containers.commands.composeUp": "op run --no-masking --env-file .env -- ${composeCommand} ${configurationFile} up --remove-orphans ${detached} ${build}",
+	"containers.commands.composeDown": "op run --no-masking --env-file .env -- ${composeCommand} ${configurationFile} down",
+	"makefile.configureOnOpen": false
+}

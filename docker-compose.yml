@@ -1,0 +1,22 @@
+name: edi
+
+services:
+  edi:
+    container_name: edi
+    image: ghcr.io/motohedgehog/edi:stable
+    environment:
+      # The Telegram bot token for EDI.
+      EDI_TELEGRAM_TOKEN: ${EDI_TELEGRAM_TOKEN:?set EDI_TELEGRAM_TOKEN}
+      # Private chat IDs that EDI can interact with (e.g. "123456789,987654321").
+      EDI_TELEGRAM_ALLOWED_CHATS: ${EDI_TELEGRAM_ALLOWED_CHATS:?set EDI_TELEGRAM_ALLOWED_CHATS}
+      EDI_LOGGING_LEVEL: ${EDI_LOGGING_LEVEL:-info}
+    volumes:
+      # The data volume is used for persistent storage of the EDI database and other files.
+      # It must be owned by the EDI user (UID/GID 65532) and have mode `u=rwx,g=,o=`.
+      - ${EDI_DATA_VOLUME_PATH:?set EDI_DATA_VOLUME_PATH}:/data:rw
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 15s

@@ -1,0 +1,11 @@
+# Review a change or design
+
+Use this procedure to assess an implementation or proposal against its requirements and the repository rules. Review the requested scope; findings do not authorize unrelated edits.
+
+1. Establish the scope. For a design review, identify the proposal and relevant existing code. For an implementation review, resolve the requested commit, tag, or branch before inspecting a diff. Compare branch changes against the merge-base; use the requested endpoints for an exact revision comparison. Include staged, unstaged, and relevant untracked files when reviewing work in progress. State the baseline and scope. Resolve invalid references; report an empty change set without inventing findings.
+2. Find the requirements in the request, linked issue, or supplied specification. Read the root guidance and applicable configuration. If requirements are unavailable, report that limitation and continue the correctness review. Ask only for scope or intent that cannot be discovered.
+3. Trace changed behavior through callers, state transitions, failure handling, and tests. Check existing validation before claiming an input can reach a failure. Consider compatibility, persistence, cancellation, resource ownership, and sensitive data where the change touches them. Use focused checks to resolve uncertainty; distinguish demonstrated behavior from an untested hypothesis.
+4. Assess requirement coverage separately: identify missing or partial behavior, incorrect implementations, and additions outside the requested scope. For a design proposal, trace representative success and failure scenarios through the proposed interface. Compare alternatives only where they change a meaningful tradeoff; favor fewer caller obligations and concentrated ownership.
+5. Report actionable findings with a precise location, triggering conditions, consequence, and supporting evidence. Prioritize by user impact. Separate defects and documented-rule violations from optional design suggestions. Avoid duplicating automated formatting checks or treating personal style preferences as defects.
+
+Finish when the changed behavior and requirements are accounted for. Report findings, unresolved questions, and checks performed. If there are no findings, say so while identifying any material gaps in verification.

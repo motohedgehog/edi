@@ -1,0 +1,82 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    "docker:pinDigests"
+  ],
+  "automerge": false,
+  "semanticCommits": "enabled",
+  "dependencyDashboardApproval": false,
+  "timezone": "Europe/London",
+  "ignoreUnstable": true,
+  "separateMajorMinor": true,
+  "vulnerabilityAlerts": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "* 10-17 * * 6"
+    ],
+    "updateNotScheduled": false
+  },
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "minimumReleaseAge": "1 day"
+    },
+    {
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "minimumReleaseAge": "1 week"
+    },
+    {
+      "matchDatasources": [
+        "golang-version",
+        "docker"
+      ],
+      "matchPackageNames": [
+        "go",
+        "golang"
+      ],
+      "groupName": "Go toolchain",
+      "groupSlug": "go-toolchain"
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang"
+      ],
+      "rangeStrategy": "bump"
+    },
+    {
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchFileNames": [
+        "docker-compose.yml"
+      ],
+      "pinDigests": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/\\A\\.github/workflows/(?:validate|build-and-publish)\\.yml\\z/"
+      ],
+      "matchStrings": [
+        "tool: git-cliff@(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s"
+      ],
+      "depNameTemplate": "orhun/git-cliff",
+      "datasourceTemplate": "github-releases"
+    }
+  ]
+}

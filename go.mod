@@ -7,7 +7,7 @@ require (
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/spf13/viper v1.21.0
 	gopkg.in/telebot.v4 v4.0.0-beta.10
-	modernc.org/sqlite v1.61.1
+	modernc.org/sqlite v1.62.0
 )
 
 require (
@@ -32,9 +32,9 @@ require (
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	modernc.org/cc/v4 v4.31.0 // indirect
-	modernc.org/ccgo/v4 v4.38.0 // indirect
+	modernc.org/ccgo/v4 v4.38.1 // indirect
 	modernc.org/gc/v3 v3.2.1 // indirect
-	modernc.org/libc v1.79.0 // indirect
+	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )

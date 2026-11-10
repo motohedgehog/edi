@@ -20,6 +20,7 @@ const (
 	DefaultHTTPTimeout                = 10 * time.Second
 	DefaultFailureThreshold           = 3
 	DefaultRecoveryConfirmationPeriod = 3 * time.Minute
+	DefaultAlertCoalescingWindow      = 3 * time.Minute
 	DefaultTimezone                   = "Europe/London"
 	DefaultLogLevel                   = "info"
 	DefaultLogFormat                  = "text"
@@ -46,6 +47,7 @@ type TfLConfig struct {
 
 type NotificationConfig struct {
 	RecoveryConfirmationPeriod time.Duration `mapstructure:"recovery_confirmation_period" yaml:"recovery_confirmation_period"`
+	AlertCoalescingWindow      time.Duration `mapstructure:"alert_coalescing_window" yaml:"alert_coalescing_window"`
 }
 
 type MonitorConfig struct {
@@ -75,6 +77,7 @@ func Load(opts LoadOptions) (Config, error) {
 
 	defaults := map[string]any{
 		"tfl.notifications.recovery_confirmation_period": DefaultRecoveryConfirmationPeriod.String(),
+		"tfl.notifications.alert_coalescing_window":      DefaultAlertCoalescingWindow.String(),
 		"data_directory":                filepath.Join(xdg.DataHome, "edi"),
 		"tfl.monitor.poll_interval":     DefaultPollInterval.String(),
 		"tfl.monitor.http_timeout":      DefaultHTTPTimeout.String(),
@@ -91,7 +94,7 @@ func Load(opts LoadOptions) (Config, error) {
 		"telegram.token", "telegram.allowed_chats", "tfl.app_key", "data_directory",
 		"tfl.monitor.poll_interval", "tfl.monitor.http_timeout", "tfl.monitor.failure_threshold",
 		"tfl.monitor.default_timezone", "logging.level", "logging.format",
-		"tfl.notifications.recovery_confirmation_period",
+		"tfl.notifications.recovery_confirmation_period", "tfl.notifications.alert_coalescing_window",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -106,7 +109,7 @@ func Load(opts LoadOptions) (Config, error) {
 		}
 	}
 
-	for _, key := range []string{"tfl.monitor.poll_interval", "tfl.monitor.http_timeout", "tfl.notifications.recovery_confirmation_period"} {
+	for _, key := range []string{"tfl.monitor.poll_interval", "tfl.monitor.http_timeout", "tfl.notifications.recovery_confirmation_period", "tfl.notifications.alert_coalescing_window"} {
 		if err := validateDurationValue(key, v.Get(key)); err != nil {
 			return Config{}, err
 		}
@@ -241,6 +244,7 @@ func Validate(cfg *Config) error {
 	}
 	for field, duration := range map[string]time.Duration{
 		"tfl.notifications.recovery_confirmation_period": cfg.TfL.Notifications.RecoveryConfirmationPeriod,
+		"tfl.notifications.alert_coalescing_window":      cfg.TfL.Notifications.AlertCoalescingWindow,
 	} {
 		if duration < 0 {
 			add(field, "must not be negative", errors.New("monitor duration must not be negative"))

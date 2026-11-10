@@ -58,6 +58,8 @@ tfl:
   notifications:
     # Good observations must span this period before announcing recovery.
     recovery_confirmation_period: 3m
+    # Edit the original line alert for any severity change within this period.
+    alert_coalescing_window: 3m
 
 # Optional; override the OS-specific persistence directory.
 # Defaults to `$XDG_DATA_HOME/edi`, or `~/.local/share/edi` on Linux,

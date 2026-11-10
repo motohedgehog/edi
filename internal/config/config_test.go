@@ -284,14 +284,17 @@ func TestValidationErrorsAreJoinedAndSafe(t *testing.T) {
 }
 
 func TestLoadNotificationDurations(t *testing.T) {
-	for _, key := range []string{"recovery_confirmation_period"} {
+	for _, key := range []string{"recovery_confirmation_period", "alert_coalescing_window"} {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv("EDI_TELEGRAM_TOKEN", "token")
 			t.Setenv("EDI_TELEGRAM_ALLOWED_CHATS", "42")
 			env := "EDI_TFL_NOTIFICATIONS_" + strings.ToUpper(key)
 			t.Setenv(env, "")
 			value := func(cfg config.Config) time.Duration {
-				return cfg.TfL.Notifications.RecoveryConfirmationPeriod
+				if key == "recovery_confirmation_period" {
+					return cfg.TfL.Notifications.RecoveryConfirmationPeriod
+				}
+				return cfg.TfL.Notifications.AlertCoalescingWindow
 			}
 			cfg, err := config.Load(config.LoadOptions{})
 			if err != nil || value(cfg) != 3*time.Minute {

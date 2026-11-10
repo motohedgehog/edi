@@ -282,3 +282,62 @@ func TestValidationErrorsAreJoinedAndSafe(t *testing.T) {
 		t.Fatal("validation causes are not joined")
 	}
 }
+
+func TestLoadNotificationDurations(t *testing.T) {
+	for _, key := range []string{"recovery_confirmation_period"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv("EDI_TELEGRAM_TOKEN", "token")
+			t.Setenv("EDI_TELEGRAM_ALLOWED_CHATS", "42")
+			env := "EDI_TFL_NOTIFICATIONS_" + strings.ToUpper(key)
+			t.Setenv(env, "")
+			value := func(cfg config.Config) time.Duration {
+				return cfg.TfL.Notifications.RecoveryConfirmationPeriod
+			}
+			cfg, err := config.Load(config.LoadOptions{})
+			if err != nil || value(cfg) != 3*time.Minute {
+				t.Fatalf("default: %+v, %v", cfg, err)
+			}
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("tfl:\n  notifications:\n    "+key+": 4m\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err = config.Load(config.LoadOptions{ConfigPath: path})
+			if err != nil || value(cfg) != 4*time.Minute {
+				t.Fatalf("YAML: %+v, %v", cfg, err)
+			}
+			for _, raw := range []string{"0s", "2m", "-1s", "60", "0", "+0", "-0", "private-duration-marker"} {
+				t.Setenv(env, raw)
+				cfg, err = config.Load(config.LoadOptions{ConfigPath: path})
+				switch raw {
+				case "0s", "2m":
+					want, _ := time.ParseDuration(raw)
+					if err != nil || value(cfg) != want {
+						t.Fatalf("override %q: %+v, %v", raw, cfg, err)
+					}
+				default:
+					if err == nil || !strings.Contains(err.Error(), "tfl.notifications."+key) || strings.Contains(err.Error(), "private-") {
+						t.Fatalf("invalid %q: %v", raw, err)
+					}
+				}
+			}
+			t.Setenv(env, "")
+			if err := os.WriteFile(path, []byte("tfl:\n  notifications:\n    "+key+": 0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := config.Load(config.LoadOptions{ConfigPath: path}); err == nil {
+				t.Fatal("accepted numeric duration")
+			}
+			if err := os.WriteFile(path, []byte("tfl:\n  notifications:\n    "+key+": 0s\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err = config.Load(config.LoadOptions{ConfigPath: path})
+			if err != nil || value(cfg) != 0 {
+				t.Fatalf("YAML zero: %+v, %v", cfg, err)
+			}
+			cfg, err = config.Load(config.LoadOptions{})
+			if err != nil || value(cfg) != 3*time.Minute {
+				t.Fatalf("load isolation: %+v, %v", cfg, err)
+			}
+		})
+	}
+}

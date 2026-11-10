@@ -15,10 +15,21 @@ import (
 )
 
 type automaticLines struct {
-	logger   *slog.Logger
-	repo     ProfileRepository
-	notifier Notifier
-	clock    Clock
+	logger                     *slog.Logger
+	repo                       ProfileRepository
+	notifier                   Notifier
+	clock                      Clock
+	recoveryConfirmationPeriod time.Duration
+	recoveries                 map[recoveryKey]recoveryObservation
+}
+
+type recoveryKey struct {
+	profileID, generation, revision int64
+	lineID                          string
+}
+
+type recoveryObservation struct {
+	since, latest time.Time
 }
 
 type lineChange struct {
@@ -35,6 +46,22 @@ func (a *automaticLines) prepare(ctx context.Context, profile store.Profile, sel
 	inWindow, period, expiresAt := SchedulePeriod(observedAt, mode, profile.Timezone, profile.WindowStart, profile.WindowEnd)
 	window := fmt.Sprintf("%d:%s", profile.Generation, period)
 	changes, baseline := compareLines(profile, states, selected, observedAt, inWindow, window)
+	for lineID := range selected {
+		key := recoveryKey{profile.ID, profile.Generation, profile.Revision, lineID}
+		if change, ok := changes[lineID]; ok && change.alert.Kind == "recovery" && a.recoveryConfirmationPeriod > 0 {
+			observation, exists := a.recoveries[key]
+			if !exists || observedAt.Before(observation.latest) {
+				observation.since = observedAt
+			}
+			observation.latest = observedAt
+			a.recoveries[key] = observation
+			if observedAt.Sub(observation.since) < a.recoveryConfirmationPeriod {
+				delete(changes, lineID)
+			}
+		} else {
+			delete(a.recoveries, key)
+		}
+	}
 	a.logger.DebugContext(ctx, "Compared selected line statuses", "user_id", profile.UserID, "selected_count", len(selected), "changed_count", len(changes), "baseline_count", len(baseline), "in_window", inWindow)
 	if !inWindow {
 		a.logger.DebugContext(ctx, "Suppressing alerts outside the notification schedule", "outcome", "outside_schedule", "user_id", profile.UserID)
@@ -77,6 +104,12 @@ func (a *automaticLines) prepare(ctx context.Context, profile store.Profile, sel
 				pending.MessageID = old.MessageID
 			}
 			created++
+		}
+		// A delayed recovery can belong to the previous schedule period.
+		if old := states[lineID]; pending == nil && old.Generation == profile.Generation && old.WindowInstance != lineWindow {
+			if err := a.repo.ReconcileLine(ctx, nil, profile.ID, profile.Generation, old.WindowInstance, lineID); err != nil {
+				return created, fmt.Errorf("cancel previous period alert: %w", err)
+			}
 		}
 		if err := a.repo.ReconcileLine(ctx, pending, profile.ID, profile.Generation, lineWindow, lineID); err != nil {
 			return created, fmt.Errorf("reconcile line alert: %w", err)
@@ -234,6 +267,12 @@ func (a *automaticLines) permitted(profile store.Profile, chunk store.OutboxChun
 		}
 	}
 	if len(chunk.Candidates) == 1 && chunk.Candidates[0].Good && !chunk.Candidates[0].Unknown {
+		candidate := chunk.Candidates[0]
+		if a.recoveryConfirmationPeriod > 0 {
+			observation, ok := a.recoveries[recoveryKey{profile.ID, profile.Generation, profile.Revision, candidate.LineID}]
+			return ok && observation.latest.Sub(observation.since) >= a.recoveryConfirmationPeriod &&
+				candidate.ObservedAt == observation.latest.UnixMilli()
+		}
 		return true
 	}
 	return ScheduleActive(now, profileScheduleMode(profile), profile.Timezone, profile.WindowStart, profile.WindowEnd)
@@ -242,4 +281,19 @@ func (a *automaticLines) permitted(profile store.Profile, chunk store.OutboxChun
 func canEdit(old store.MonitorState, candidate store.CandidateState, now time.Time) bool {
 	return old.MessageID > 0 && !old.SentAt.IsZero() && !now.Before(old.SentAt) && now.Sub(old.SentAt) < DescriptionEditPeriod &&
 		old.Generation == candidate.Generation && old.WindowInstance == candidate.WindowInstance && old.SeverityKey != "" && old.SeverityKey == candidate.SeverityKey
+}
+
+func (a *automaticLines) pruneRecoveries(profiles []store.Profile) {
+	for key := range a.recoveries {
+		active := false
+		for _, profile := range profiles {
+			if profile.ID == key.profileID && profile.Generation == key.generation && profile.Revision == key.revision && slices.Contains(profile.Lines, key.lineID) {
+				active = true
+				break
+			}
+		}
+		if !active {
+			delete(a.recoveries, key)
+		}
+	}
 }

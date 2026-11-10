@@ -59,7 +59,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return cleanup(startupFailure{stage: "telegram_initialization", err: err})
 	}
 	monitorService := monitor.NewService(database, status, bot, monitor.ServiceOptions{Catalog: referenceData.Catalog,
-		Logger: logger, AllowedUsers: cfg.Telegram.AllowedChats, FailureThreshold: cfg.TfL.Monitor.FailureThreshold})
+		Logger: logger, AllowedUsers: cfg.Telegram.AllowedChats, FailureThreshold: cfg.TfL.Monitor.FailureThreshold,
+		RecoveryConfirmationPeriod: cfg.TfL.Notifications.RecoveryConfirmationPeriod})
 	return &App{logger: logger, store: database, bot: bot, monitor: monitorService,
 		refresh: referenceData.Refresh, pollEvery: cfg.TfL.Monitor.PollInterval}, nil
 }

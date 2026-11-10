@@ -60,11 +60,12 @@ type Service struct {
 }
 
 type ServiceOptions struct {
-	Logger           *slog.Logger
-	Catalog          func() []tfl.Line
-	AllowedUsers     []int64
-	FailureThreshold int
-	Clock            Clock
+	RecoveryConfirmationPeriod time.Duration
+	Logger                     *slog.Logger
+	Catalog                    func() []tfl.Line
+	AllowedUsers               []int64
+	FailureThreshold           int
+	Clock                      Clock
 }
 
 func NewService(repo ProfileRepository, status StatusSource, notifier Notifier, opts ServiceOptions) *Service {
@@ -91,7 +92,9 @@ func NewService(repo ProfileRepository, status StatusSource, notifier Notifier, 
 	logger = logger.With("component", "monitor")
 	return &Service{logger: logger, repo: repo, status: status, notifier: notifier, catalog: catalog,
 		allowed: allowed, failureThreshold: threshold, clock: clock,
-		lines: automaticLines{repo: repo, notifier: notifier, clock: clock, logger: logger}}
+		lines: automaticLines{repo: repo, notifier: notifier, clock: clock, logger: logger,
+			recoveryConfirmationPeriod: opts.RecoveryConfirmationPeriod,
+			recoveries:                 make(map[recoveryKey]recoveryObservation)}}
 }
 
 type CycleResult struct {
@@ -154,6 +157,7 @@ func (s *Service) Cycle(ctx context.Context) (result CycleResult, err error) {
 			recovery = append(recovery, profile)
 		}
 	}
+	s.lines.pruneRecoveries(enabled)
 	if len(configured) == 0 {
 		s.mu.Lock()
 		s.failures = 0
@@ -163,6 +167,7 @@ func (s *Service) Cycle(ctx context.Context) (result CycleResult, err error) {
 
 	snapshot, statusErr := s.status.Status(ctx)
 	if statusErr != nil {
+		clear(s.lines.recoveries)
 		s.mu.Lock()
 		s.failures++
 		failures := s.failures
@@ -205,6 +210,8 @@ func (s *Service) Cycle(ctx context.Context) (result CycleResult, err error) {
 		created, err := s.lines.prepare(ctx, profile, selected, snapshot.ObservedAt, now)
 		result.AlertsCreated += created
 		if err != nil {
+			// Later profiles may not have observed an interruption in this snapshot.
+			clear(s.lines.recoveries)
 			return result, err
 		}
 	}

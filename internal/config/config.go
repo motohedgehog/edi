@@ -15,13 +15,14 @@ import (
 )
 
 const (
-	DefaultPollInterval     = time.Minute
-	MinimumPollInterval     = 30 * time.Second
-	DefaultHTTPTimeout      = 10 * time.Second
-	DefaultFailureThreshold = 3
-	DefaultTimezone         = "Europe/London"
-	DefaultLogLevel         = "info"
-	DefaultLogFormat        = "text"
+	DefaultPollInterval               = time.Minute
+	MinimumPollInterval               = 30 * time.Second
+	DefaultHTTPTimeout                = 10 * time.Second
+	DefaultFailureThreshold           = 3
+	DefaultRecoveryConfirmationPeriod = 3 * time.Minute
+	DefaultTimezone                   = "Europe/London"
+	DefaultLogLevel                   = "info"
+	DefaultLogFormat                  = "text"
 )
 
 // Config is the complete validated service configuration.
@@ -38,8 +39,13 @@ type TelegramConfig struct {
 }
 
 type TfLConfig struct {
-	AppKey  string        `mapstructure:"app_key" yaml:"app_key"`
-	Monitor MonitorConfig `mapstructure:"monitor" yaml:"monitor"`
+	AppKey        string             `mapstructure:"app_key" yaml:"app_key"`
+	Monitor       MonitorConfig      `mapstructure:"monitor" yaml:"monitor"`
+	Notifications NotificationConfig `mapstructure:"notifications" yaml:"notifications"`
+}
+
+type NotificationConfig struct {
+	RecoveryConfirmationPeriod time.Duration `mapstructure:"recovery_confirmation_period" yaml:"recovery_confirmation_period"`
 }
 
 type MonitorConfig struct {
@@ -68,6 +74,7 @@ func Load(opts LoadOptions) (Config, error) {
 	v.AutomaticEnv()
 
 	defaults := map[string]any{
+		"tfl.notifications.recovery_confirmation_period": DefaultRecoveryConfirmationPeriod.String(),
 		"data_directory":                filepath.Join(xdg.DataHome, "edi"),
 		"tfl.monitor.poll_interval":     DefaultPollInterval.String(),
 		"tfl.monitor.http_timeout":      DefaultHTTPTimeout.String(),
@@ -84,6 +91,7 @@ func Load(opts LoadOptions) (Config, error) {
 		"telegram.token", "telegram.allowed_chats", "tfl.app_key", "data_directory",
 		"tfl.monitor.poll_interval", "tfl.monitor.http_timeout", "tfl.monitor.failure_threshold",
 		"tfl.monitor.default_timezone", "logging.level", "logging.format",
+		"tfl.notifications.recovery_confirmation_period",
 	}
 	for _, key := range keys {
 		if err := v.BindEnv(key); err != nil {
@@ -98,7 +106,7 @@ func Load(opts LoadOptions) (Config, error) {
 		}
 	}
 
-	for _, key := range []string{"tfl.monitor.poll_interval", "tfl.monitor.http_timeout"} {
+	for _, key := range []string{"tfl.monitor.poll_interval", "tfl.monitor.http_timeout", "tfl.notifications.recovery_confirmation_period"} {
 		if err := validateDurationValue(key, v.Get(key)); err != nil {
 			return Config{}, err
 		}
@@ -143,6 +151,9 @@ func validateDurationValue(key string, value any) error {
 	case reflect.String:
 		if _, err := time.ParseDuration(strings.TrimSpace(v.String())); err != nil {
 			return fieldFailure{field: key, rule: "expected a duration with units", err: fmt.Errorf("%s must use a duration with units: %w", key, err)}
+		}
+		if raw := strings.TrimSpace(v.String()); raw == "0" || raw == "+0" || raw == "-0" {
+			return fieldFailure{field: key, rule: "expected a duration with units", err: fmt.Errorf("%s must use a duration with units", key)}
 		}
 	}
 	return nil
@@ -227,6 +238,13 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.TfL.Monitor.HTTPTimeout <= 0 {
 		add("tfl.monitor.http_timeout", "must be positive", errors.New("monitor HTTP timeout must be positive"))
+	}
+	for field, duration := range map[string]time.Duration{
+		"tfl.notifications.recovery_confirmation_period": cfg.TfL.Notifications.RecoveryConfirmationPeriod,
+	} {
+		if duration < 0 {
+			add(field, "must not be negative", errors.New("monitor duration must not be negative"))
+		}
 	}
 	if cfg.TfL.Monitor.FailureThreshold <= 0 {
 		add("tfl.monitor.failure_threshold", "must be positive", errors.New("monitor failure threshold must be positive"))

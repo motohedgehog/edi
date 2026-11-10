@@ -55,6 +55,9 @@ tfl:
     failure_threshold: 3
     # IANA timezone name.
     default_timezone: Europe/London
+  notifications:
+    # Good observations must span this period before announcing recovery.
+    recovery_confirmation_period: 3m
 
 # Optional; override the OS-specific persistence directory.
 # Defaults to `$XDG_DATA_HOME/edi`, or `~/.local/share/edi` on Linux,

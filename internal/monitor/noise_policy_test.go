@@ -11,6 +11,35 @@ import (
 	"github.com/motohedgehog/edi/internal/tfl"
 )
 
+func TestSeverityCoalescingKeepsOriginalDeadline(t *testing.T) {
+	database, ctx := openTestStore(t)
+	profile := saveEnabledProfile(ctx, t, database, []string{"central"})
+	start := time.Date(2026, 1, 5, 6, 30, 0, 0, time.UTC)
+	clock := &mutableClock{at: start}
+	source := &changingStatusSource{}
+	notifier := &fakeNotifier{}
+	opts := monitor.ServiceOptions{AllowedUsers: []int64{profile.UserID}, Clock: clock, AlertCoalescingWindow: 3 * time.Minute}
+	service := monitor.NewService(database, source, notifier, opts)
+	for i, offset := range []time.Duration{0, 2 * time.Minute, 3 * time.Minute} {
+		clock.at = start.Add(offset)
+		if i == 2 {
+			service = monitor.NewService(database, source, notifier, opts)
+		}
+		source.snapshot = disruptionSnapshot(clock.at, "central")
+		line := source.snapshot.Lines["central"]
+		line.Fingerprint = []string{"minor", "severe", "suspended"}[i]
+		line.Statuses[0].Description = []string{"Minor delays", "Severe delays", "Suspended"}[i]
+		line.Statuses[0].Severity = []int{5, 6, 2}[i]
+		source.snapshot.Lines["central"] = line
+		if _, err := service.Cycle(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if notifier.calls != 2 || len(notifier.edits) != 1 || notifier.edits[0] != 1 {
+		t.Fatalf("sends=%d edits=%v", notifier.calls, notifier.edits)
+	}
+}
+
 func TestRecoveryNeedsSustainedGoodObservations(t *testing.T) {
 	database, ctx := openTestStore(t)
 	profile := saveEnabledProfile(ctx, t, database, []string{"central"})
@@ -120,6 +149,43 @@ func TestRecoveryConfirmationResets(t *testing.T) {
 	}
 }
 
+func TestRecoveryAndCoalescingCanBeDisabledIndependently(t *testing.T) {
+	for _, test := range []struct {
+		name                     string
+		confirmation, coalescing time.Duration
+		recoveredAt              int
+		sends, edits             int
+	}{
+		{name: "immediate recovery coalesces", coalescing: 3 * time.Minute, recoveredAt: 1, sends: 1, edits: 1},
+		{name: "confirmed recovery sends", confirmation: 3 * time.Minute, recoveredAt: 4, sends: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			database, ctx := openTestStore(t)
+			profile := saveEnabledProfile(ctx, t, database, []string{"central"})
+			start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+			clock := &mutableClock{at: start}
+			source := &changingStatusSource{snapshot: disruptionSnapshot(start, "central")}
+			notifier := &fakeNotifier{}
+			service := monitor.NewService(database, source, notifier, monitor.ServiceOptions{AllowedUsers: []int64{profile.UserID}, Clock: clock, RecoveryConfirmationPeriod: test.confirmation, AlertCoalescingWindow: test.coalescing})
+			for minute := 0; minute <= test.recoveredAt; minute++ {
+				clock.at = start.Add(time.Duration(minute) * time.Minute)
+				if minute > 0 {
+					source.snapshot = goodSnapshot(clock.at)
+				}
+				if _, err := service.Cycle(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if minute < test.recoveredAt && (notifier.calls != 1 || len(notifier.edits) != 0) {
+					t.Fatalf("recovered early: %+v", notifier)
+				}
+			}
+			if notifier.calls != test.sends || len(notifier.edits) != test.edits {
+				t.Fatalf("sends=%d edits=%v", notifier.calls, notifier.edits)
+			}
+		})
+	}
+}
+
 func TestRecoveryRetriesCannotBypassReset(t *testing.T) {
 	for _, reset := range []string{"poll failure", "restart", "restart next period", "disruption", "unknown"} {
 		t.Run(reset, func(t *testing.T) {
@@ -188,6 +254,38 @@ func TestRecoveryRetriesCannotBypassReset(t *testing.T) {
 				t.Fatalf("confirmed recovery should deliver once: %+v", notifier)
 			}
 		})
+	}
+}
+
+func TestConfirmedRecoveryReplacesUnavailableCoalescedTarget(t *testing.T) {
+	database, ctx := openTestStore(t)
+	profile := saveEnabledProfile(ctx, t, database, []string{"central"})
+	start := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
+	clock := &mutableClock{at: start}
+	source := &changingStatusSource{snapshot: disruptionSnapshot(start, "central")}
+	notifier := &fakeNotifier{editErr: monitor.ErrEditTargetUnavailable}
+	service := monitor.NewService(database, source, notifier, monitor.ServiceOptions{AllowedUsers: []int64{profile.UserID}, Clock: clock, RecoveryConfirmationPeriod: time.Minute, AlertCoalescingWindow: 3 * time.Minute})
+	for minute := 0; minute <= 2; minute++ {
+		clock.at = start.Add(time.Duration(minute) * time.Minute)
+		if minute > 0 {
+			source.snapshot = goodSnapshot(clock.at)
+		}
+		if _, err := service.Cycle(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if minute == 1 && (notifier.calls != 1 || len(notifier.edits) != 0) {
+			t.Fatal("unconfirmed recovery edited alert")
+		}
+	}
+	if notifier.calls != 2 || len(notifier.edits) != 1 || notifier.edits[0] != 1 {
+		t.Fatalf("replacement=%+v", notifier)
+	}
+	states, err := database.GetMonitorStates(ctx, profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !states["central"].Good || states["central"].MessageID != 2 || !states["central"].SentAt.Equal(clock.at) {
+		t.Fatalf("recovery receipt=%+v", states["central"])
 	}
 }
 

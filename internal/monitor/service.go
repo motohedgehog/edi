@@ -61,6 +61,7 @@ type Service struct {
 
 type ServiceOptions struct {
 	RecoveryConfirmationPeriod time.Duration
+	AlertCoalescingWindow      time.Duration
 	Logger                     *slog.Logger
 	Catalog                    func() []tfl.Line
 	AllowedUsers               []int64
@@ -93,8 +94,8 @@ func NewService(repo ProfileRepository, status StatusSource, notifier Notifier, 
 	return &Service{logger: logger, repo: repo, status: status, notifier: notifier, catalog: catalog,
 		allowed: allowed, failureThreshold: threshold, clock: clock,
 		lines: automaticLines{repo: repo, notifier: notifier, clock: clock, logger: logger,
-			recoveryConfirmationPeriod: opts.RecoveryConfirmationPeriod,
-			recoveries:                 make(map[recoveryKey]recoveryObservation)}}
+			recoveryConfirmationPeriod: opts.RecoveryConfirmationPeriod, alertCoalescingWindow: opts.AlertCoalescingWindow,
+			recoveries: make(map[recoveryKey]recoveryObservation)}}
 }
 
 type CycleResult struct {

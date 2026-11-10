@@ -20,27 +20,45 @@ func RenderAutomaticAlert(line AlertLine, observed time.Time, timezone string) (
 	if len(statuses) == 0 {
 		statuses = []tfl.NormalizedStatus{{Description: "Unknown status"}}
 	}
-	blocks := make([]statusBlock, len(statuses))
-	for i, status := range statuses {
+	blocks := make([]statusBlock, 0, len(statuses))
+	indicators := make(map[StatusIndicator]int, len(statuses))
+	reasons := make(map[string]struct{}, len(statuses))
+	for _, status := range statuses {
 		indicator := ClassifyStatus(status)
 		if line.Kind == "recovery" {
 			indicator = StatusIndicator{Icon: "✅", Label: "Good Service restored"}
 		}
-		blocks[i] = statusBlock{lineID: line.LineID, lineName: name, indicator: indicator}
+		i, exists := indicators[indicator]
+		if !exists {
+			i = len(blocks)
+			indicators[indicator] = i
+			blocks = append(blocks, statusBlock{lineID: line.LineID, lineName: name, indicator: indicator})
+		}
+		key := normalizeStatusCategory(status.Reason)
+		if _, duplicate := reasons[key]; key == "" || duplicate {
+			continue
+		}
+		reasons[key] = struct{}{}
+		if blocks[i].reason != "" {
+			blocks[i].reason += "\n"
+		}
+		blocks[i].reason += strings.TrimSpace(status.Reason)
 	}
 	timestamp := observed.In(locationFor(timezone)).Format("02 Jan · 15:04 MST")
 	const omitted = "[description omitted]"
 	// Reserve omission markers before spending any space on descriptions.
-	for i, status := range statuses {
-		if strings.TrimSpace(status.Reason) != "" {
+	descriptions := make([]string, len(blocks))
+	for i, block := range blocks {
+		descriptions[i] = block.reason
+		if block.reason != "" {
 			blocks[i].reason = omitted
 		}
 	}
 	if messageLength(blocks, timestamp, "") > MaxTelegramMessage {
 		return message.Chunk{}, errors.New("automatic alert labels exceed message limit")
 	}
-	for i, status := range statuses {
-		reason := []rune(safeText(strings.TrimSpace(status.Reason)))
+	for i, description := range descriptions {
+		reason := []rune(safeText(description))
 		if len(reason) == 0 {
 			continue
 		}

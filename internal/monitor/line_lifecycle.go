@@ -20,6 +20,7 @@ type automaticLines struct {
 	notifier                   Notifier
 	clock                      Clock
 	recoveryConfirmationPeriod time.Duration
+	alertCoalescingWindow      time.Duration
 	recoveries                 map[recoveryKey]recoveryObservation
 }
 
@@ -99,7 +100,7 @@ func (a *automaticLines) prepare(ctx context.Context, profile store.Profile, sel
 			lineWindow = change.candidate.WindowInstance
 			pending.Operation = "send"
 			old := states[lineID]
-			if canEdit(old, change.candidate, now) {
+			if a.canEdit(old, change.candidate, now) {
 				pending.Operation = "edit"
 				pending.MessageID = old.MessageID
 			}
@@ -137,7 +138,7 @@ func (a *automaticLines) deliver(ctx context.Context, profile store.Profile, chu
 	var messageID int
 	var deliveryErr error
 	var sentAt time.Time
-	if canEdit(old, candidate, now) {
+	if a.canEdit(old, candidate, now) {
 		chunk.Operation = "edit"
 		messageID = old.MessageID
 		chunk.MessageID = old.MessageID
@@ -278,9 +279,13 @@ func (a *automaticLines) permitted(profile store.Profile, chunk store.OutboxChun
 	return ScheduleActive(now, profileScheduleMode(profile), profile.Timezone, profile.WindowStart, profile.WindowEnd)
 }
 
-func canEdit(old store.MonitorState, candidate store.CandidateState, now time.Time) bool {
-	return old.MessageID > 0 && !old.SentAt.IsZero() && !now.Before(old.SentAt) && now.Sub(old.SentAt) < DescriptionEditPeriod &&
-		old.Generation == candidate.Generation && old.WindowInstance == candidate.WindowInstance && old.SeverityKey != "" && old.SeverityKey == candidate.SeverityKey
+func (a *automaticLines) canEdit(old store.MonitorState, candidate store.CandidateState, now time.Time) bool {
+	if old.MessageID <= 0 || old.SentAt.IsZero() || now.Before(old.SentAt) ||
+		old.Generation != candidate.Generation || old.WindowInstance != candidate.WindowInstance {
+		return false
+	}
+	age := now.Sub(old.SentAt)
+	return age < a.alertCoalescingWindow || age < DescriptionEditPeriod && old.SeverityKey != "" && old.SeverityKey == candidate.SeverityKey
 }
 
 func (a *automaticLines) pruneRecoveries(profiles []store.Profile) {

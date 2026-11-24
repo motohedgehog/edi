@@ -7,7 +7,7 @@ require (
 	github.com/pressly/goose/v3 v3.30.1
 	github.com/spf13/viper v1.21.0
 	gopkg.in/telebot.v4 v4.0.0
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (

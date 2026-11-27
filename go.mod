@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/adrg/xdg v0.5.3
-	github.com/pressly/goose/v3 v3.30.1
+	github.com/pressly/goose/v3 v3.30.2
 	github.com/spf13/viper v1.21.0
 	gopkg.in/telebot.v4 v4.0.0
 	modernc.org/sqlite v1.63.0
